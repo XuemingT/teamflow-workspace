@@ -28,3 +28,5 @@ export const TeamFlowTeam = models.TeamFlowTeam || model("TeamFlowTeam", teamSch
 export const TeamFlowTeamMembership = models.TeamFlowTeamMembership || model("TeamFlowTeamMembership", teamMembershipSchema);
 export const TeamFlowChannel = models.TeamFlowChannel || model("TeamFlowChannel", channelSchema);
 export const TeamFlowMessage = models.TeamFlowMessage || model("TeamFlowMessage", messageSchema);
+
+export const TeamFlowTaskComment = models.TeamFlowTaskComment || model("TeamFlowTaskComment", new Schema({ task: { type: Schema.Types.ObjectId, ref: "TeamFlowTask", required: true, index: true }, author: { type: Schema.Types.ObjectId, ref: "TeamFlowUser", required: true }, body: { type: String, required: true, maxlength: 5000 } }, { timestamps: true }));

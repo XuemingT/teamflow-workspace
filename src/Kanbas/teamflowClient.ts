@@ -27,3 +27,8 @@ export const getChannels = async () => (await api.get("/api/teamflow/channels"))
 export const getChannelMessages = async (channelId: string) => (await api.get(`/api/teamflow/channels/${channelId}/messages`)).data;
 export const createDirectChannel = async (memberId: string) => (await api.post("/api/teamflow/channels/direct", { memberId })).data;
 export const createGroupChannel = async (name: string, memberIds: string[]) => (await api.post("/api/teamflow/channels/group", { name, memberIds })).data;
+
+export const getTaskDetail = async (id: string) => (await api.get(`/api/teamflow/tasks/${id}`)).data;
+export const updateTask = async (id: string, payload: { title: string; description: string; status: string; priority: string; assigneeId: string; dueDate: string | null }) => (await api.patch(`/api/teamflow/tasks/${id}`, payload)).data;
+export const getTaskComments = async (id: string) => (await api.get(`/api/teamflow/tasks/${id}/comments`)).data;
+export const addTaskComment = async (id: string, body: string) => (await api.post(`/api/teamflow/tasks/${id}/comments`, { body })).data;

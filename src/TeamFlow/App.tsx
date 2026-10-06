@@ -331,9 +331,9 @@ export default function App() {
       <div className="flex flex-col flex-1 min-w-0">
         <TopBar onMobileMenu={() => setMobileOpen(true)} query={query} onQuery={setQuery} results={results} onResult={(result) => { setQuery(""); setPage(result.page); }} notifications={notifications} onNotification={async (notification) => { if (notification.meetingInvitation?.status === "PENDING") { const accepted = window.confirm("Accept this meeting invitation? Choose Cancel to decline."); await respondToMeetingInvitation(notification.meetingInvitation._id, accepted ? "ACCEPTED" : "DECLINED"); await refreshWorkspace(); return; } if (!notification.read) { await markNotificationRead(notification._id); setNotifications((items) => items.map((item) => item._id === notification._id ? { ...item, read: true } : item)); } if (notification.link) navigate(notification.link); }} onReadAll={async () => { await markAllNotificationsRead(); setNotifications((items) => items.map((item) => ({ ...item, read: true }))); }} onAccount={() => setAccountOpen(true)} />
         <main className="flex-1 overflow-auto scrollbar-thin" style={{ background: "#F5F6FA" }}>
-          {page === "home" && <HomePage key={`home-${revision}`} onNavigate={setPage} onCreate={setCreationMode} />}
-          {page === "projects" && <ProjectsPage key={`projects-${revision}`} onCreate={setCreationMode} onRefresh={refreshWorkspace} />}
-          {page === "tasks" && <TasksPage key={`tasks-${revision}`} onToggle={async (task) => { await updateTaskStatus(task.sourceId, task.status === "done" ? "BACKLOG" : "DONE"); await refreshWorkspace(); }} />}
+          {page === "home" && <HomePage onRefresh={refreshWorkspace} onNavigate={setPage} onCreate={setCreationMode} />}
+          {page === "projects" && <ProjectsPage onCreate={setCreationMode} onRefresh={refreshWorkspace} />}
+          {page === "tasks" && <TasksPage onRefresh={refreshWorkspace} onToggle={async (task) => { await updateTaskStatus(task.sourceId, task.status === "done" ? "BACKLOG" : "DONE"); await refreshWorkspace(); }} />}
           {page === "calendar" && <CalendarPage key={`calendar-${revision}`} onCreate={setCreationMode} />}
           {page === "people" && <PeoplePage onChat={(channelId) => { setChatChannelId(channelId); setPage("chat"); }} />}
           {page === "chat" && <Chat initialChannelId={chatChannelId} />}

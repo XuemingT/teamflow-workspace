@@ -1,4 +1,5 @@
-import { TeamFlowActivity, TeamFlowChannel, TeamFlowEvent, TeamFlowInvitation, TeamFlowMeetingInvitation, TeamFlowMembership, TeamFlowMessage, TeamFlowNotification, TeamFlowProject, TeamFlowTask, TeamFlowTeamMembership, TeamFlowUser } from "./models.js";
+import mongoose from "mongoose";
+import { TeamFlowTaskComment, TeamFlowActivity, TeamFlowChannel, TeamFlowEvent, TeamFlowInvitation, TeamFlowMeetingInvitation, TeamFlowMembership, TeamFlowMessage, TeamFlowNotification, TeamFlowProject, TeamFlowTask, TeamFlowTeamMembership, TeamFlowUser } from "./models.js";
 
 export default function routes(app) {
   const requireUser = (req, res) => req.session.teamFlowUserId || (res.sendStatus(401), null);
@@ -16,7 +17,46 @@ export default function routes(app) {
   app.post("/api/teamflow/projects", async (req, res) => { const userId = requireUser(req, res); if (!userId) return; const { name, description = "", dueDate } = req.body; if (!name?.trim()) return res.status(400).json({ message: "Project name is required" }); const project = await TeamFlowProject.create({ name: name.trim(), description, dueDate: dueDate || undefined, owner: userId, slug: `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}-${Date.now()}`, color: "#7C5CFC" }); await TeamFlowMembership.create({ user: userId, project: project._id, role: "OWNER" }); res.status(201).json(project); });
   app.patch("/api/teamflow/projects/:id", async (req, res) => { const userId = requireUser(req, res); if (!userId) return; const { status } = req.body; if (!["ON_TRACK", "AT_RISK", "BLOCKED", "COMPLETE", "ARCHIVED"].includes(status)) return res.status(400).json({ message: "Choose a valid project status." }); if (!await TeamFlowMembership.exists({ user: userId, project: req.params.id })) return res.sendStatus(403); const project = await TeamFlowProject.findByIdAndUpdate(req.params.id, { status }, { new: true }); if (!project) return res.sendStatus(404); await TeamFlowActivity.create({ actor: userId, project: project._id, type: "PROJECT_STATUS_CHANGED", message: `changed project status to ${status.replace("_", " ").toLowerCase()}` }); res.json(project); });
   app.post("/api/teamflow/tasks", async (req, res) => { const userId = requireUser(req, res); if (!userId) return; const { title, description = "", projectId, assigneeId, dueDate, priority = "MEDIUM", status = "BACKLOG" } = req.body; if (!title?.trim() || !projectId) return res.status(400).json({ message: "Task title and project are required" }); if (!await TeamFlowMembership.exists({ user: userId, project: projectId })) return res.sendStatus(403); const assignee = assigneeId || userId; if (!await TeamFlowMembership.exists({ user: assignee, project: projectId })) return res.status(400).json({ message: "Assignee must be a project member" }); const task = await TeamFlowTask.create({ title: title.trim(), description, project: projectId, assignee, dueDate: dueDate || undefined, priority, status }); await TeamFlowActivity.create({ actor: userId, project: projectId, task: task._id, type: "CREATED", message: "created a task" }); res.status(201).json(task); });
-  app.patch("/api/teamflow/tasks/:id", async (req, res) => { const userId = requireUser(req, res); if (!userId) return; const task = await TeamFlowTask.findById(req.params.id); if (!task || !await TeamFlowMembership.exists({ user: userId, project: task.project })) return res.sendStatus(404); if (req.body.status) task.status = req.body.status; await task.save(); await TeamFlowActivity.create({ actor: userId, project: task.project, task: task._id, type: "STATUS_CHANGED", message: `changed task status to ${task.status}` }); res.json(task); });
+  const accessibleTask = async (req, res) => {
+    const userId = requireUser(req, res); if (!userId) return null;
+    if (!mongoose.isValidObjectId(req.params.id)) { res.sendStatus(404); return null; }
+    const task = await TeamFlowTask.findById(req.params.id);
+    if (!task || !await TeamFlowMembership.exists({ user: userId, project: task.project })) { res.sendStatus(404); return null; }
+    return task;
+  };
+  const taskHandler = (handler) => async (req, res) => { try { await handler(req, res); } catch (error) { console.error("Task request failed", error.name); res.status(500).json({ message: "Could not complete this request. Please try again." }); } };
+  app.get("/api/teamflow/tasks/:id", taskHandler(async (req, res) => {
+    const task = await accessibleTask(req, res); if (!task) return;
+    const members = await TeamFlowMembership.find({ project: task.project }).populate("user", userFields).lean();
+    res.json({ task, members: members.map((item) => item.user).filter(Boolean) });
+  }));
+  app.patch("/api/teamflow/tasks/:id", taskHandler(async (req, res) => {
+    const task = await accessibleTask(req, res); if (!task) return;
+    const input = req.body;
+    if (input.title !== undefined && (typeof input.title !== "string" || !input.title.trim() || input.title.length > 200)) return res.status(400).json({ message: "Enter a task title of 1–200 characters." });
+    if (input.description !== undefined && (typeof input.description !== "string" || input.description.length > 10000)) return res.status(400).json({ message: "Description must be at most 10,000 characters." });
+    if (input.status !== undefined && !["BACKLOG", "IN_PROGRESS", "IN_REVIEW", "DONE"].includes(input.status)) return res.status(400).json({ message: "Choose a valid task status." });
+    if (input.priority !== undefined && !["LOW", "MEDIUM", "HIGH", "URGENT"].includes(input.priority)) return res.status(400).json({ message: "Choose a valid priority." });
+    if (input.dueDate && (typeof input.dueDate !== "string" || !Number.isFinite(Date.parse(input.dueDate)))) return res.status(400).json({ message: "Choose a valid due date." });
+    if (input.assigneeId && (!mongoose.isValidObjectId(input.assigneeId) || !await TeamFlowMembership.exists({ project: task.project, user: input.assigneeId }))) return res.status(400).json({ message: "Choose a member of this project." });
+    for (const field of ["title", "description", "status", "priority"]) if (input[field] !== undefined) task[field] = field === "title" ? input[field].trim() : input[field];
+    if (input.dueDate !== undefined) task.dueDate = input.dueDate || undefined;
+    if (input.assigneeId !== undefined) task.assignee = input.assigneeId || undefined;
+    await task.save();
+    await TeamFlowActivity.create({ actor: req.session.teamFlowUserId, project: task.project, task: task._id, type: "TASK_UPDATED", message: "updated task details" });
+    res.json(task);
+  }));
+  app.get("/api/teamflow/tasks/:id/comments", taskHandler(async (req, res) => {
+    const task = await accessibleTask(req, res); if (!task) return;
+    res.json(await TeamFlowTaskComment.find({ task: task._id }).populate("author", "firstName lastName").sort({ createdAt: 1 }).lean());
+  }));
+  app.post("/api/teamflow/tasks/:id/comments", taskHandler(async (req, res) => {
+    const task = await accessibleTask(req, res); if (!task) return;
+    if (typeof req.body.body !== "string" || !req.body.body.trim() || req.body.body.length > 5000) return res.status(400).json({ message: "Enter a comment of 1–5,000 characters." });
+    const comment = await TeamFlowTaskComment.create({ task: task._id, author: req.session.teamFlowUserId, body: req.body.body.trim() });
+    await TeamFlowActivity.create({ actor: req.session.teamFlowUserId, project: task.project, task: task._id, type: "TASK_COMMENTED", message: "commented on a task" });
+    res.status(201).json(await comment.populate("author", "firstName lastName"));
+  }));
 
   app.post("/api/teamflow/events", async (req, res) => { const userId = requireUser(req, res); if (!userId) return; const { title, description = "", projectId, startsAt, endsAt, attendeeIds = [], meetingUrl = "" } = req.body; if (!title?.trim() || !projectId || !startsAt) return res.status(400).json({ message: "Title, project, and start time are required" }); if (!await TeamFlowMembership.exists({ user: userId, project: projectId })) return res.sendStatus(403); const invitees = [...new Set(attendeeIds.map(String))].filter((id) => id !== String(userId)); const event = await TeamFlowEvent.create({ title: title.trim(), description, project: projectId, startsAt, endsAt: endsAt || new Date(new Date(startsAt).getTime() + 1800000), attendees: [userId], meetingUrl }); const invitations = await Promise.all(invitees.map((invitee) => TeamFlowMeetingInvitation.create({ event: event._id, invitee, invitedBy: userId }))); if (invitations.length) await TeamFlowNotification.insertMany(invitations.map((item) => ({ user: item.invitee, title: "Meeting invitation", body: `You were invited to ${event.title}.`, meetingInvitation: item._id }))); res.status(201).json({ event, invitationsSent: invitations.length }); });
   app.post("/api/teamflow/meeting-invitations/:id/respond", async (req, res) => { const userId = requireUser(req, res); if (!userId) return; const status = req.body.status; if (!["ACCEPTED", "DECLINED"].includes(status)) return res.status(400).json({ message: "Choose Accepted or Declined." }); const invite = await TeamFlowMeetingInvitation.findOne({ _id: req.params.id, invitee: userId, status: "PENDING" }).populate("event"); if (!invite) return res.status(404).json({ message: "This invitation is no longer pending." }); invite.status = status; await invite.save(); if (status === "ACCEPTED") await TeamFlowEvent.findByIdAndUpdate(invite.event._id, { $addToSet: { attendees: userId } }); const person = await TeamFlowUser.findById(userId).select("firstName lastName").lean(); await TeamFlowNotification.create({ user: invite.invitedBy, title: `Meeting ${status.toLowerCase()}`, body: `${person.firstName} ${person.lastName} ${status === "ACCEPTED" ? "accepted" : "declined"} ${invite.event.title}.`, link: "/Kanbas/Calendar" }); await TeamFlowNotification.updateMany({ user: userId, meetingInvitation: invite._id }, { read: true }); res.json(invite); });

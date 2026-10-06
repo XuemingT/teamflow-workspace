@@ -1,7 +1,9 @@
+import CreateModal from "../CreateModal";
+import TaskDetail from "../TaskDetail";
 import { useState } from "react";
 import { PROJECTS, TASKS, UPDATES, type Project, type Task } from "../data";
 import type { CreationMode } from "../App";
-import { updateProjectStatus } from "../../Kanbas/teamflowClient";
+import { updateTaskStatus, updateProjectStatus } from "../../Kanbas/teamflowClient";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -69,17 +71,20 @@ function SectionCard({ icon, title, subtitle, children, action }: {
 
 const KANBAN_COLS: { id: Task["status"]; label: string }[] = [
   { id: "backlog",     label: "Backlog" },
-  { id: "todo",        label: "To do" },
   { id: "in-progress", label: "In progress" },
   { id: "in-review",   label: "In review" },
   { id: "done",        label: "Done" },
 ];
 
-function KanbanCard({ task }: { task: Task }) {
+function KanbanCard({ task, onOpen, disabled }: { task: Task; onOpen: (task: Task) => void; disabled: boolean }) {
   const [hov, setHov] = useState(false);
   return (
-    <div
-      className="bg-white rounded-xl p-3.5 cursor-pointer transition-all"
+    <button
+      disabled={disabled}
+      draggable={!disabled}
+      onDragStart={(event) => { event.dataTransfer.setData("application/x-teamflow-task", task.sourceId); event.dataTransfer.effectAllowed = "move"; }}
+      onClick={() => onOpen(task)}
+      className="w-full text-left bg-white rounded-xl p-3.5 cursor-pointer transition-all focus-visible:ring-2 focus-visible:ring-[#7C5CFC]"
       style={{ border: `1px solid ${hov ? "#C4B5FD" : "#EAECF0"}`, boxShadow: hov ? "0 2px 8px rgba(124,92,252,0.1)" : "none" }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
@@ -97,19 +102,31 @@ function KanbanCard({ task }: { task: Task }) {
           <Avatar initials={task.assignee} color={task.assigneeColor} size={20} />
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
-function KanbanBoard({ projectId }: { projectId: string }) {
+function KanbanBoard({ projectId, onOpen, onRefresh, onAdd }: { projectId: string; onOpen: (task: Task) => void; onRefresh: () => Promise<void>; onAdd: (status: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [target, setTarget] = useState("");
+  const move = async (id: string, status: Task["status"]) => {
+    const task = TASKS.find((item) => item.sourceId === id && item.projectId === projectId);
+    if (!task || task.status === status || busy) return;
+    setBusy(true); setError(""); setFeedback("");
+    try { await updateTaskStatus(id, status.toUpperCase().replace(/-/g, "_")); setFeedback(`Moved task to ${status.replace(/-/g, " ")}.`); await onRefresh(); }
+    catch { setError("Could not move or refresh this task. Reload to check its status, then try again."); }
+    finally { setBusy(false); setTarget(""); }
+  };
   const tasks = TASKS.filter((t) => t.projectId === projectId);
   return (
-    <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
+    <div>{error && <p role="alert" className="mb-3 text-sm text-red-700">{error}</p>}{(busy || feedback) && <p role="status" className="mb-3 text-sm text-[#7C5CFC]">{busy ? "Moving task…" : feedback}</p>}<p className="mb-4 text-xs text-gray-500">Drag a task to another column, or open it to change its status.</p><div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
       {KANBAN_COLS.map((col) => {
         const colTasks = tasks.filter((t) => t.status === col.id);
         const cfg = TASK_STATUS_CFG[col.id];
         return (
-          <div key={col.id} className="flex-shrink-0 w-[220px]">
+          <div key={col.id} onDragOver={(event) => { if (!busy && event.dataTransfer.types.includes("application/x-teamflow-task")) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setTarget(col.id); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setTarget(""); }} onDrop={(event) => { event.preventDefault(); setTarget(""); void move(event.dataTransfer.getData("application/x-teamflow-task"), col.id); }} className={`flex-shrink-0 w-[220px] rounded-xl p-2 min-h-[180px] ${target === col.id ? "bg-[#EDE9FE] ring-2 ring-[#C4B5FD]" : "bg-[#F8F9FB]"}`}>
             <div className="flex items-center gap-2 mb-3 px-1">
               <div className="w-2 h-2 rounded-full" style={{ background: cfg.color }} />
               <span className="text-[12px] font-semibold" style={{ color: "#374151" }}>{col.label}</span>
@@ -118,8 +135,8 @@ function KanbanBoard({ projectId }: { projectId: string }) {
               </span>
             </div>
             <div className="space-y-2">
-              {colTasks.map((t) => <KanbanCard key={t.id} task={t} />)}
-              <button className="w-full text-[12px] py-2 px-3 rounded-xl text-left transition-colors" style={{ color: "#9CA3AF" }}
+              {colTasks.map((t) => <KanbanCard key={t.sourceId} task={t} onOpen={onOpen} disabled={busy} />)}
+              <button disabled={busy} onClick={() => onAdd(col.id.toUpperCase().replace(/-/g, "_"))} className="w-full text-[12px] py-2 px-3 rounded-xl text-left transition-colors" style={{ color: "#9CA3AF" }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = "#F5F6FA"; e.currentTarget.style.color = "#7C5CFC"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#9CA3AF"; }}
               >
@@ -129,7 +146,7 @@ function KanbanBoard({ projectId }: { projectId: string }) {
           </div>
         );
       })}
-    </div>
+    </div></div>
   );
 }
 
@@ -138,7 +155,9 @@ function KanbanBoard({ projectId }: { projectId: string }) {
 const TABS = ["Overview", "Tasks", "Activity", "Team"] as const;
 type Tab = typeof TABS[number];
 
-function ProjectDetail({ project, onBack, onStatusChange }: { project: Project; onBack: () => void; onStatusChange: (status: string) => Promise<void> }) {
+function ProjectDetail({ project, onBack, onStatusChange, onRefresh }: { project: Project; onBack: () => void; onStatusChange: (status: string) => Promise<void>; onRefresh: () => Promise<void> }) {
+  const [creationStatus, setCreationStatus] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [tab, setTab] = useState<Tab>("Overview");
   const status = STATUS_CFG[project.status];
   const projectUpdates = UPDATES.filter((u) => u.projectId === project.id);
@@ -146,6 +165,8 @@ function ProjectDetail({ project, onBack, onStatusChange }: { project: Project; 
 
   return (
     <div>
+      {creationStatus && <CreateModal mode="task" initialProjectId={project.id} initialStatus={creationStatus} onClose={() => setCreationStatus(null)} onSaved={onRefresh} />}
+      {selectedTask && <TaskDetail key={selectedTask.sourceId} task={selectedTask} onClose={() => setSelectedTask(null)} onRefresh={onRefresh} />}
       {/* Header */}
       <div className="bg-white border-b sticky top-0 z-10" style={{ borderColor: "#EAECF0" }}>
         <div className="px-7 pt-4 pb-0" style={{ maxWidth: 1160, margin: "0 auto" }}>
@@ -297,12 +318,12 @@ function ProjectDetail({ project, onBack, onStatusChange }: { project: Project; 
           <div>
             <div className="flex items-center justify-between mb-5">
               <p className="text-[13px]" style={{ color: "#6B7280" }}>{projectTasks.length} tasks across {KANBAN_COLS.length} stages</p>
-              <button className="flex items-center gap-1.5 text-white text-[13px] font-semibold rounded-xl px-4 py-2 hover:opacity-90 transition-opacity" style={{ background: "#7C5CFC" }}>
+              <button onClick={() => setCreationStatus("BACKLOG")} className="flex items-center gap-1.5 text-white text-[13px] font-semibold rounded-xl px-4 py-2 hover:opacity-90 transition-opacity" style={{ background: "#7C5CFC" }}>
                 <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M5.5 1v9M1 5.5h9" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" /></svg>
                 Add task
               </button>
             </div>
-            <KanbanBoard projectId={project.id} />
+            <KanbanBoard projectId={project.id} onOpen={setSelectedTask} onRefresh={onRefresh} onAdd={setCreationStatus} />
           </div>
         )}
 
@@ -373,7 +394,7 @@ export default function ProjectsPage({ onCreate, onRefresh }: { onCreate: (mode:
   const [filter, setFilter] = useState<Filter>("All");
   const [search, setSearch] = useState("");
 
-  if (selected) return <ProjectDetail project={selected} onBack={() => setSelected(null)} onStatusChange={async (status) => { await updateProjectStatus(selected.id, status.toUpperCase().replace("-", "_")); await onRefresh(); }} />;
+  if (selected) return <ProjectDetail onRefresh={onRefresh} project={PROJECTS.find((project) => project.id === selected.id) || selected} onBack={() => setSelected(null)} onStatusChange={async (status) => { await updateProjectStatus(selected.id, status.toUpperCase().replace("-", "_")); await onRefresh(); }} />;
 
   const filtered = PROJECTS.filter((p) => {
     const m = p.name.toLowerCase().includes(search.toLowerCase()) || p.description.toLowerCase().includes(search.toLowerCase());

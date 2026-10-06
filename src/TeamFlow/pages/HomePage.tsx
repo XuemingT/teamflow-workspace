@@ -1,3 +1,5 @@
+import TaskDetail from "../TaskDetail";
+import { updateTaskStatus } from "../../Kanbas/teamflowClient";
 import { useState } from "react";
 import { TASKS, PROJECTS, EVENTS, UPDATES, CURRENT_USER, MEMBERS, type Task, type Project } from "../data";
 import type { CreationMode, Page } from "../App";
@@ -215,9 +217,10 @@ function ActivityRow({ update }: { update: typeof UPDATES[0] }) {
 
 // ─── Pending task row ─────────────────────────────────────────────────────────
 
-function PendingTaskRow({ task }: { task: Task }) {
-  const [done, setDone] = useState(false);
-  const priority = PRIORITY_CFG[task.priority];
+function PendingTaskRow({ task, onOpen, onToggle }: { task: Task; onOpen: (task: Task) => void; onToggle: (task: Task) => Promise<void> }) {
+  const priority = PRIORITY_CFG[task.priority] || PRIORITY_CFG.high;
+  const done = task.status === "done";
+  const [saving, setSaving] = useState(false);
   return (
     <div
       className="flex items-center gap-3 px-5 py-3.5 transition-colors"
@@ -226,7 +229,8 @@ function PendingTaskRow({ task }: { task: Task }) {
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
     >
       <button
-        onClick={() => setDone(!done)}
+        aria-label={`Complete ${task.title}`} disabled={saving}
+        onClick={async () => { setSaving(true); try { await onToggle(task); } finally { setSaving(false); } }}
         className="w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors"
         style={{ background: done ? "#7C5CFC" : "transparent", borderColor: done ? "#7C5CFC" : "#D1D5DB" }}
       >
@@ -236,7 +240,7 @@ function PendingTaskRow({ task }: { task: Task }) {
           </svg>
         )}
       </button>
-      <div className="flex-1 min-w-0">
+      <button onClick={() => onOpen(task)} className="flex-1 min-w-0 text-left focus-visible:ring-2 focus-visible:ring-[#7C5CFC]">
         <p className="text-[13px] font-medium truncate" style={{ color: done ? "#9CA3AF" : "#111827", textDecoration: done ? "line-through" : "none" }}>
           {task.title}
         </p>
@@ -244,7 +248,7 @@ function PendingTaskRow({ task }: { task: Task }) {
           <div className="w-1.5 h-1.5 rounded-full" style={{ background: task.projectColor }} />
           <p className="text-[11.5px]" style={{ color: "#9CA3AF" }}>Due: {task.dueDate}</p>
         </div>
-      </div>
+      </button>
       <span
         className="text-[10.5px] font-bold rounded-lg px-2.5 py-1 flex-shrink-0"
         style={{ color: priority.color, background: priority.bg }}
@@ -297,13 +301,21 @@ function UpcomingRow({ event }: { event: typeof EVENTS[0] }) {
 
 // ─── HomePage ─────────────────────────────────────────────────────────────────
 
-export default function HomePage({ onNavigate, onCreate }: { onNavigate: (p: Page) => void; onCreate: (mode: CreationMode) => void }) {
+export default function HomePage({ onNavigate, onCreate, onRefresh }: { onNavigate: (p: Page) => void; onCreate: (mode: CreationMode) => void; onRefresh: () => Promise<void> }) {
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [taskError, setTaskError] = useState("");
+  const [focus, setFocus] = useState("today");
+  const now = new Date();
+  const sameDay = (date?: string) => Boolean(date && new Date(date).toDateString() === now.toDateString());
+  const mine = TASKS.filter((task) => task.assigneeId === CURRENT_USER.id && task.status !== "done");
+  const personalTasks = mine.filter((task) => focus === "all" || (focus === "overdue" ? task.overdue : sameDay(task.dueAt))).sort((a, b) => (a.dueAt ? Date.parse(a.dueAt) : Infinity) - (b.dueAt ? Date.parse(b.dueAt) : Infinity));
+  const todayMeetings = EVENTS.filter((event) => sameDay(event.startsAt));
+  const toggleTask = async (task: Task) => { try { setTaskError(""); await updateTaskStatus(task.sourceId, "DONE"); await onRefresh(); } catch { setTaskError("Could not update this task. Please try again."); } };
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const highPriorityTasks = TASKS.filter((t) => t.priority === "high" && t.status !== "done").slice(0, 4);
-  const todayTasks = TASKS.filter((t) => t.dueDate === "Today" || t.dueDate === "Tomorrow").slice(0, 4);
+  const highPriorityTasks = TASKS.filter((t) => (t.priority === "high" || t.priority === "urgent") && t.status !== "done").slice(0, 4);
   const recentUpdates = UPDATES.slice(0, 4);
-  const upcomingEvents = EVENTS.slice(0, 3);
+  const upcomingEvents = EVENTS.filter((event) => event.startsAt && new Date(event.endsAt || event.startsAt).getTime() >= now.getTime()).slice(0, 3);
 
   const totalOpen = TASKS.filter((t) => t.status !== "done").length;
   const totalOverdue = TASKS.filter((t) => t.overdue).length;
@@ -313,6 +325,7 @@ export default function HomePage({ onNavigate, onCreate }: { onNavigate: (p: Pag
 
   return (
     <div className="px-7 py-7" style={{ maxWidth: 1200, margin: "0 auto" }}>
+      {selectedTask && <TaskDetail key={selectedTask.sourceId} task={selectedTask} onClose={() => setSelectedTask(null)} onRefresh={onRefresh} />}
       {/* Page header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -395,8 +408,13 @@ export default function HomePage({ onNavigate, onCreate }: { onNavigate: (p: Pag
         />
       </div>
 
+      <section className="mb-5 rounded-2xl border border-[#EAECF0] bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-bold text-[#111827]">Your day</h2><p className="mt-1 text-xs text-gray-500">{mine.length} open tasks assigned to you · {todayMeetings.length} meetings today</p></div><div className="flex flex-wrap gap-2">{[["today", "Due today"], ["overdue", "Overdue"], ["all", "All my tasks"]].map(([value, label]) => <button key={value} aria-pressed={focus === value} onClick={() => setFocus(value)} className={`rounded-lg px-3 py-2 text-xs font-semibold ${focus === value ? "bg-[#EDE9FE] text-[#7C5CFC]" : "bg-gray-50 text-gray-600"}`}>{label}</button>)}</div></div>
+        {taskError && <p role="alert" className="mt-3 text-sm text-red-700">{taskError}</p>}
+        <div className="mt-4 grid gap-5 lg:grid-cols-[2fr_1fr]"><div>{personalTasks.length ? personalTasks.slice(0, 5).map((task) => <PendingTaskRow key={task.sourceId} task={task} onOpen={setSelectedTask} onToggle={toggleTask} />) : <p className="py-5 text-sm text-gray-500">{focus === "overdue" ? "No overdue tasks assigned to you." : focus === "today" ? "No tasks due today. Check All my tasks for your next priority." : "No open tasks assigned to you."}</p>}{personalTasks.length > 5 && <button onClick={() => onNavigate("tasks")} className="mt-3 text-xs font-semibold text-[#7C5CFC]">Browse all tasks →</button>}</div><div className="rounded-xl bg-[#F8F9FB] p-4"><h3 className="text-sm font-semibold">Today’s meetings</h3>{todayMeetings.length ? todayMeetings.map((event) => <button key={event.id} onClick={() => onNavigate("calendar")} className="mt-3 block w-full text-left"><span className="block text-sm font-medium text-gray-800">{event.title}</span><span className="text-xs text-gray-500">{event.time} · {event.project}</span></button>) : <p className="mt-3 text-xs text-gray-500">No meetings scheduled today.</p>}</div></div>
+      </section>
       {/* Main 2-col grid */}
-      <div className="grid gap-5" style={{ gridTemplateColumns: "1fr 340px" }}>
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         {/* Left col */}
         <div className="space-y-5">
           {/* Active Projects */}
@@ -520,7 +538,7 @@ export default function HomePage({ onNavigate, onCreate }: { onNavigate: (p: Pag
             subtitle="Tasks that need your attention"
           >
             {highPriorityTasks.map((t) => (
-              <PendingTaskRow key={t.id} task={t} />
+              <PendingTaskRow key={t.sourceId} task={t} onOpen={setSelectedTask} onToggle={toggleTask} />
             ))}
           </SectionCard>
         </div>
